@@ -1033,6 +1033,23 @@ struct SVMNodePrincipledVolume {
 static_assert(alignof(SVMNodePrincipledVolume) <= alignof(uint));
 static_assert(sizeof(SVMNodePrincipledVolume) % sizeof(uint) == 0);
 
+/* NODE_TABULATED_VOLUME
+ * Only covers the fixed header; the phase function table follows, with `table_size` floats laid
+ * out as described for phase_tabulated_eval(). */
+struct SVMNodeTabulatedVolume {
+  /* Scattering and absorption coefficients per unit density. */
+  packed_float3 sigma_s;
+  packed_float3 sigma_a;
+  SVMInputFloat density;
+  uint table_size;
+  int num_angles;
+  float g;
+  SVMStackOffset mix_weight_offset;
+  uint8_t _pad[3];
+};
+static_assert(alignof(SVMNodeTabulatedVolume) <= alignof(uint));
+static_assert(sizeof(SVMNodeTabulatedVolume) % sizeof(uint) == 0);
+
 /* NODE_CLOSURE_BSDF. Common header for all BSDFs, followed by data defined below. */
 struct SVMNodeClosureBsdf {
   ClosureType closure_type;

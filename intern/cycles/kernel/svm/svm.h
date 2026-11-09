@@ -392,6 +392,17 @@ ccl_device void svm_eval_nodes(KernelGlobals kg,
         }
       }
       break;
+      SVM_CASE(NODE_TABULATED_VOLUME)
+      {
+        const ccl_global SVMNodeTabulatedVolume &node = svm_node_get<SVMNodeTabulatedVolume>(
+            kg, &offset);
+        IF_KERNEL_NODES_FEATURE (VOLUME) {
+          /* The phase function table directly follows the node. */
+          svm_node_tabulated_volume<type>(kg, sd, stack, node, offset);
+        }
+        offset += node.table_size;
+      }
+      break;
       SVM_CASE(NODE_MATH)
       svm_node_math(stack, svm_node_get<SVMNodeMath>(kg, &offset));
       break;

@@ -1358,6 +1358,49 @@ ccl_device_noinline void svm_node_principled_volume(
 #endif
 }
 
+template<ShaderType shader_type>
+ccl_device_noinline void svm_node_tabulated_volume(
+    KernelGlobals kg,
+    ccl_private ShaderData *sd,
+    ccl_private float *ccl_restrict stack,
+    const ccl_global SVMNodeTabulatedVolume &ccl_restrict node,
+    const int table_offset)
+{
+#ifdef __VOLUME__
+  /* Only sum extinction for volumes, variable is shared with surface transparency. */
+  if (shader_type != SHADER_TYPE_VOLUME) {
+    return;
+  }
+
+  const float mix_weight = stack_load_float_default(stack, node.mix_weight_offset, 1.0f);
+  if (mix_weight == 0.0f) {
+    return;
+  }
+
+  /* The coefficients in the table are per unit density. */
+  float density = stack_load(stack, node.density);
+  density = mix_weight * fmaxf(density, 0.0f) * object_volume_density(kg, sd->object);
+
+  const Spectrum sigma_s = rgb_to_spectrum(node.sigma_s) * density;
+  const Spectrum sigma_a = rgb_to_spectrum(node.sigma_a) * density;
+
+  /* Add closure for volume scattering. */
+  if (!is_zero(sigma_s)) {
+    ccl_private TabulatedVolume *volume = (ccl_private TabulatedVolume *)bsdf_alloc(
+        sd, sizeof(TabulatedVolume), sigma_s);
+    if (volume) {
+      volume->table_offset = table_offset;
+      volume->num_angles = node.num_angles;
+      volume->g = node.g;
+      sd->runtime_flag |= volume_tabulated_setup(volume);
+    }
+  }
+
+  /* Sum total extinction weight. */
+  volume_extinction_setup(sd, sigma_s + sigma_a);
+#endif
+}
+
 ccl_device_noinline void svm_node_closure_emission(
     KernelGlobals kg,
     ccl_private ShaderData *sd,

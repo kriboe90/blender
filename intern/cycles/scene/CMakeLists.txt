@@ -35,6 +35,7 @@ set(SRC
   light.cpp
   light_tree.cpp
   light_tree_debug.cpp
+  medium_table.cpp
   mesh.cpp
   mesh_displace.cpp
   mesh_subdivision.cpp
@@ -77,6 +78,7 @@ set(SRC_HEADERS
   light.h
   light_tree.h
   light_tree_debug.h
+  medium_table.h
   mesh.h
   object.h
   osl.h

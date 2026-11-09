@@ -352,6 +352,10 @@ class NODE_MT_shader_node_shader_base(node_add_menu.NodeMenu):
                 layout,
                 "ShaderNodeVolumeScatter",
             )
+            self.node_operator(
+                layout,
+                "ShaderNodeVolumeTabulated",
+            )
 
         self.draw_assets_for_catalog(layout, self.bl_label)
 

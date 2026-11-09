@@ -958,6 +958,22 @@ class PrincipledVolumeNode : public VolumeNode {
   NODE_SOCKET_API(float, temperature)
 };
 
+struct MediumTable;
+
+/* Volume with scattering and absorption coefficients and a phase function per color channel from
+ * a medium table, see `scene/medium_table.h`. */
+class TabulatedVolumeNode : public VolumeNode {
+ public:
+  SHADER_NODE_CLASS(TabulatedVolumeNode)
+
+  /* Text of the medium table. When empty, the table is read from `filepath`. */
+  NODE_SOCKET_API(ustring, table)
+  NODE_SOCKET_API(ustring, filepath)
+
+ private:
+  bool build_table(MediumTable &medium) const;
+};
+
 /* Interface between the I/O sockets and the SVM/OSL backend. */
 class PrincipledHairBsdfNode : public BsdfBaseNode {
  public:

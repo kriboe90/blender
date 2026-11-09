@@ -11,6 +11,7 @@
 #include "kernel/closure/volume_fournier_forand.h"
 #include "kernel/closure/volume_henyey_greenstein.h"
 #include "kernel/closure/volume_rayleigh.h"
+#include "kernel/closure/volume_tabulated.h"
 
 CCL_NAMESPACE_BEGIN
 
@@ -29,7 +30,8 @@ ccl_device void volume_extinction_setup(ccl_private ShaderData *sd, Spectrum wei
 
 /* VOLUME SCATTERING */
 
-ccl_device Spectrum volume_phase_eval(const ccl_private ShaderData *sd,
+ccl_device Spectrum volume_phase_eval(KernelGlobals kg,
+                                      const ccl_private ShaderData *sd,
                                       const ccl_private ShaderVolumeClosure *svc,
                                       const float3 wo,
                                       ccl_private float *pdf)
@@ -43,6 +45,8 @@ ccl_device Spectrum volume_phase_eval(const ccl_private ShaderData *sd,
       return volume_draine_eval(sd, svc, wo, pdf);
     case CLOSURE_VOLUME_HENYEY_GREENSTEIN_ID:
       return volume_henyey_greenstein_eval(sd, svc, wo, pdf);
+    case CLOSURE_VOLUME_TABULATED_ID:
+      return volume_tabulated_eval(kg, sd, svc, wo, pdf);
     default:
       kernel_assert(false);
       *pdf = 0.0f;
@@ -50,7 +54,8 @@ ccl_device Spectrum volume_phase_eval(const ccl_private ShaderData *sd,
   }
 }
 
-ccl_device int volume_phase_sample(const ccl_private ShaderData *sd,
+ccl_device int volume_phase_sample(KernelGlobals kg,
+                                   const ccl_private ShaderData *sd,
                                    const ccl_private ShaderVolumeClosure *svc,
                                    const float2 rand,
                                    ccl_private Spectrum *eval,
@@ -66,6 +71,8 @@ ccl_device int volume_phase_sample(const ccl_private ShaderData *sd,
       return volume_draine_sample(sd, svc, rand, eval, wo, pdf);
     case CLOSURE_VOLUME_HENYEY_GREENSTEIN_ID:
       return volume_henyey_greenstein_sample(sd, svc, rand, eval, wo, pdf);
+    case CLOSURE_VOLUME_TABULATED_ID:
+      return volume_tabulated_sample(kg, sd, svc, rand, eval, wo, pdf);
     default:
       kernel_assert(false);
       *pdf = 0.0f;
@@ -106,6 +113,11 @@ ccl_device bool volume_phase_equal(const ccl_private ShaderClosure *c1,
       ccl_private HenyeyGreensteinVolume *v2 = (ccl_private HenyeyGreensteinVolume *)c2;
       return v1->g == v2->g;
     }
+    case CLOSURE_VOLUME_TABULATED_ID: {
+      ccl_private TabulatedVolume *v1 = (ccl_private TabulatedVolume *)c1;
+      ccl_private TabulatedVolume *v2 = (ccl_private TabulatedVolume *)c2;
+      return v1->table_offset == v2->table_offset && v1->num_angles == v2->num_angles;
+    }
     default:
       return false;
   }
@@ -128,6 +140,8 @@ ccl_device float volume_phase_get_g(const ccl_private ShaderVolumeClosure *svc)
       return ((ccl_private DraineVolume *)svc)->g;
     case CLOSURE_VOLUME_HENYEY_GREENSTEIN_ID:
       return ((ccl_private HenyeyGreensteinVolume *)svc)->g;
+    case CLOSURE_VOLUME_TABULATED_ID:
+      return ((ccl_private TabulatedVolume *)svc)->g;
     default:
       return 0.0f;
   }

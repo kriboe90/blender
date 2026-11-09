@@ -839,6 +839,11 @@ static ShaderNode *add_node(Scene *scene,
     }
     node = coeffs;
   }
+  else if (b_node.is_type("ShaderNodeVolumeTabulated"_ustr)) {
+    TabulatedVolumeNode *tabulated = graph->create_node<TabulatedVolumeNode>();
+    tabulated->set_table(ustring(get_text_datablock_content(b_node.id)));
+    node = tabulated;
+  }
   else if (b_node.is_type("ShaderNodeVolumePrincipled"_ustr)) {
     PrincipledVolumeNode *principled = graph->create_node<PrincipledVolumeNode>();
     node = principled;
