@@ -1,0 +1,17 @@
+/* SPDX-FileCopyrightText: 2026 Blender Authors
+ *
+ * SPDX-License-Identifier: Apache-2.0 */
+
+#include "stdcycles.h"
+
+/* OSL has no tabulated phase function closure. The scene node passes the coefficients and mean
+ * cosine of the medium table, and the phase function is approximated with Henyey-Greenstein. */
+shader node_tabulated_volume(color SigmaS = color(0.0, 0.0, 0.0),
+                             color SigmaA = color(0.0, 0.0, 0.0),
+                             float G = 0.0,
+                             float Density = 1.0,
+                             output closure color Volume = 0)
+{
+  float density = max(Density, 0.0);
+  Volume = (SigmaS * density) * henyey_greenstein(G) + (SigmaA * density) * absorption();
+}

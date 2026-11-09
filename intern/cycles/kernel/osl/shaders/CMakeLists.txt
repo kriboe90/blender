@@ -44,6 +44,7 @@ set(SRC_OSL
   node_absorption_volume.osl
   node_volume_coefficients.osl
   node_principled_volume.osl
+  node_tabulated_volume.osl
   node_holdout.osl
   node_hsv.osl
   node_ies_light.osl

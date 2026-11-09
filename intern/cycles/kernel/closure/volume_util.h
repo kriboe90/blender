@@ -307,4 +307,85 @@ ccl_device void phase_mie_fitted_parameters(float d,
   }
 }
 
+/* Tabulated phase function with one table per color channel, e.g. computed with Mie theory and
+ * band-averaged to RGB.
+ *
+ * The table has `num_angles` samples at theta_i = i * pi / (num_angles - 1). Each sample stores
+ * PHASE_TABULATED_STRIDE floats: f_r, f_g, f_b and the CDF of their average at theta_i.
+ * f_c(theta) = 2 * pi * p_c(theta) * sin(theta) is the density of channel c over the scattering
+ * angle theta. It is linearly interpolated between samples and normalized so that the interpolated
+ * function integrates to one. Evaluation and sampling use this same piecewise linear
+ * representation, so the PDF matches the sampled distribution exactly.
+ *
+ * The table is built on the host by `medium_table_build()`, see `scene/medium_table.h`. */
+#define PHASE_TABULATED_STRIDE 4
+
+ccl_device_inline float3 phase_tabulated_fetch(const ccl_global float *table, const int i)
+{
+  const ccl_global float *entry = table + PHASE_TABULATED_STRIDE * i;
+  return make_float3(entry[0], entry[1], entry[2]);
+}
+
+/* Evaluate the phase function of every color channel for scattering angle theta, and return the
+ * PDF of phase_tabulated_sample_theta(), which is the average over the channels. Both theta and
+ * sin(theta) are passed in, so callers can compute them precisely for small angles. */
+ccl_device float3 phase_tabulated_eval(const ccl_global float *table,
+                                       const int num_angles,
+                                       const float theta,
+                                       const float sin_theta,
+                                       ccl_private float *pdf)
+{
+  const float inv_dtheta = float(num_angles - 1) * M_1_PI_F;
+  const float x = clamp(theta, 0.0f, M_PI_F) * inv_dtheta;
+  const int i = clamp(float_to_int(x), 0, num_angles - 2);
+  const float t = clamp(x - float(i), 0.0f, 1.0f);
+
+  float3 f;
+  if (sin_theta > 1e-6f) {
+    /* Convert the density over theta to a density over solid angle. */
+    f = mix(phase_tabulated_fetch(table, i), phase_tabulated_fetch(table, i + 1), t) /
+        (M_2PI_F * sin_theta);
+  }
+  else {
+    /* At the poles, both the interpolated density and sin(theta) go to zero linearly. */
+    const int j = (theta < M_PI_2_F) ? 1 : num_angles - 2;
+    f = phase_tabulated_fetch(table, j) * (inv_dtheta / M_2PI_F);
+  }
+
+  *pdf = average(f);
+  return f;
+}
+
+/* Sample a scattering angle from the average of the channel phase functions. */
+ccl_device float phase_tabulated_sample_theta(const ccl_global float *table,
+                                              const int num_angles,
+                                              const float rand)
+{
+  /* Binary search for the interval [lo, lo + 1] containing the random number in the CDF. The CDF
+   * is zero at the first sample and one at the last. */
+  int lo = 0;
+  int hi = num_angles - 1;
+  while (hi - lo > 1) {
+    const int mid = (lo + hi) >> 1;
+    if (table[PHASE_TABULATED_STRIDE * mid + 3] <= rand) {
+      lo = mid;
+    }
+    else {
+      hi = mid;
+    }
+  }
+
+  /* Invert the CDF of the linear density inside the interval, by solving
+   *   dtheta * (f0 * t + (f1 - f0) * t^2 / 2) = rand - cdf(lo)
+   * for t, in a form that is stable for f0 == f1 and f0 == 0. */
+  const float dtheta = M_PI_F / float(num_angles - 1);
+  const float f0 = average(phase_tabulated_fetch(table, lo));
+  const float f1 = average(phase_tabulated_fetch(table, lo + 1));
+  const float a = fmaxf(rand - table[PHASE_TABULATED_STRIDE * lo + 3], 0.0f) / dtheta;
+  const float denom = f0 + safe_sqrtf(sqr(f0) + 2.0f * (f1 - f0) * a);
+  const float t = (denom > 0.0f) ? saturatef(2.0f * a / denom) : 0.0f;
+
+  return (float(lo) + t) * dtheta;
+}
+
 CCL_NAMESPACE_END

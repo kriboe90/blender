@@ -45,6 +45,7 @@ set(SRC_KERNEL_CLOSURE_HEADERS
   closure/volume_rayleigh.h
   closure/volume_fournier_forand.h
   closure/volume_draine.h
+  closure/volume_tabulated.h
   closure/bsdf_principled_hair_chiang.h
   closure/bsdf_principled_hair_huang.h
 )

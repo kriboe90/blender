@@ -155,9 +155,9 @@ ccl_device_inline void volume_shader_prepare_guiding(KernelGlobals kg,
 
 /* Phase Evaluation & Sampling */
 
-/* Randomly sample a volume phase function proportional to ShaderClosure.sample_weight. */
-/* TODO: this isn't quite correct, we don't weight anisotropy properly depending on color channels,
- * even if this is perhaps not a common case */
+/* Randomly sample a volume phase function proportional to ShaderClosure.sample_weight. This only
+ * decides the sampling strategy; the evaluation in _volume_shader_phase_eval_mis() weights the
+ * phase functions per color channel. */
 const ccl_device_inline ccl_private ShaderVolumeClosure *volume_shader_phase_pick(
     const ccl_private ShaderVolumePhases *phases, ccl_private float2 *rand_phase)
 {
@@ -187,46 +187,50 @@ const ccl_device_inline ccl_private ShaderVolumeClosure *volume_shader_phase_pic
   return &phases->closure[sampled];
 }
 
-ccl_device_inline float _volume_shader_phase_eval_mis(const ccl_private ShaderData *sd,
-                                                      const ccl_private ShaderVolumePhases *phases,
-                                                      const float3 wo,
-                                                      ccl_private BsdfEval *result_eval,
-                                                      float sum_pdf,
-                                                      float sum_sample_weight)
+/* Evaluate the phase functions, except `skip_svc` which the caller already accumulated.
+ *
+ * The evaluation is the mixture of phase functions weighted per color channel by the closure
+ * weights, which are the scattering coefficients of the components. Each channel thus gets its own
+ * mixture, eval_c = sum_i(weight_i,c * p_i,c) / sum_i(weight_i,c), which is what the scattering
+ * coefficient sigma_s = sum_i(weight_i) applied by the integrator expects.
+ *
+ * The PDF is the mixture weighted by the sample weights, matching how a phase function is picked
+ * for sampling in volume_shader_phase_pick(). */
+ccl_device_inline float _volume_shader_phase_eval_mis(
+    KernelGlobals kg,
+    const ccl_private ShaderData *sd,
+    const ccl_private ShaderVolumePhases *phases,
+    const float3 wo,
+    const ccl_private ShaderVolumeClosure *skip_svc,
+    ccl_private BsdfEval *result_eval,
+    float sum_pdf,
+    float sum_sample_weight,
+    Spectrum sum_weight)
 {
   for (int i = 0; i < phases->num_closure; i++) {
     const ccl_private ShaderVolumeClosure *svc = &phases->closure[i];
+
+    if (svc == skip_svc) {
+      continue;
+    }
+
     float phase_pdf = 0.0f;
-    const Spectrum eval = volume_phase_eval(sd, svc, wo, &phase_pdf);
+    const Spectrum eval = volume_phase_eval(kg, sd, svc, wo, &phase_pdf);
 
     if (phase_pdf != 0.0f) {
-      bsdf_eval_accum(result_eval, eval * svc->sample_weight);
+      bsdf_eval_accum(result_eval, eval * svc->weight);
       sum_pdf += phase_pdf * svc->sample_weight;
     }
 
     sum_sample_weight += svc->sample_weight;
+    sum_weight += svc->weight;
   }
 
-  bsdf_eval_mul(result_eval, 1.0f / sum_sample_weight);
+  bsdf_eval_mul(result_eval, safe_divide(one_spectrum(), sum_weight));
   return (sum_sample_weight > 0.0f) ? sum_pdf / sum_sample_weight : 0.0f;
 }
 
-ccl_device float volume_shader_phase_eval(const ccl_private ShaderData *sd,
-                                          const ccl_private ShaderVolumeClosure *svc,
-                                          const float3 wo,
-                                          ccl_private BsdfEval *phase_eval)
-{
-  float phase_pdf = 0.0f;
-  const Spectrum eval = volume_phase_eval(sd, svc, wo, &phase_pdf);
-
-  if (phase_pdf != 0.0f) {
-    bsdf_eval_accum(phase_eval, eval);
-  }
-
-  return phase_pdf;
-}
-
-ccl_device float volume_shader_phase_eval(ccl_attr_maybe_unused KernelGlobals kg,
+ccl_device float volume_shader_phase_eval(KernelGlobals kg,
                                           ccl_attr_maybe_unused IntegratorState state,
                                           const ccl_private ShaderData *sd,
                                           const ccl_private ShaderVolumePhases *phases,
@@ -236,7 +240,8 @@ ccl_device float volume_shader_phase_eval(ccl_attr_maybe_unused KernelGlobals kg
 {
   bsdf_eval_init(phase_eval, zero_spectrum());
 
-  float pdf = _volume_shader_phase_eval_mis(sd, phases, wo, phase_eval, 0.0f, 0.0f);
+  float pdf = _volume_shader_phase_eval_mis(
+      kg, sd, phases, wo, nullptr, phase_eval, 0.0f, 0.0f, zero_spectrum());
 
 #  if defined(__PATH_GUIDING__) && PATH_GUIDING_LEVEL >= 4
   if ((kernel_data.kernel_features & KERNEL_FEATURE_PATH_GUIDING)) {
@@ -258,10 +263,44 @@ ccl_device float volume_shader_phase_eval(ccl_attr_maybe_unused KernelGlobals kg
   return pdf;
 }
 
+/* Sample direction for a picked phase function, and return evaluation and PDF for all phase
+ * functions combined using MIS. */
+ccl_device int volume_shader_phase_sample(KernelGlobals kg,
+                                          const ccl_private ShaderData *sd,
+                                          const ccl_private ShaderVolumePhases *phases,
+                                          const ccl_private ShaderVolumeClosure *svc,
+                                          const float2 rand_phase,
+                                          ccl_private BsdfEval *phase_eval,
+                                          ccl_private float3 *wo,
+                                          ccl_private float *pdf,
+                                          ccl_private float *sampled_roughness)
+{
+  *sampled_roughness = 1.0f - fabsf(volume_phase_get_g(svc));
+  Spectrum eval = zero_spectrum();
+
+  *pdf = 0.0f;
+  const int label = volume_phase_sample(kg, sd, svc, rand_phase, &eval, wo, pdf);
+
+  if (*pdf != 0.0f) {
+    if (phases->num_closure > 1) {
+      const float sample_weight = svc->sample_weight;
+      bsdf_eval_init(phase_eval, eval * svc->weight);
+      *pdf = _volume_shader_phase_eval_mis(
+          kg, sd, phases, *wo, svc, phase_eval, *pdf * sample_weight, sample_weight, svc->weight);
+    }
+    else {
+      bsdf_eval_init(phase_eval, eval);
+    }
+  }
+
+  return label;
+}
+
 #  if defined(__PATH_GUIDING__)
 ccl_device int volume_shader_phase_guided_sample(KernelGlobals kg,
                                                  IntegratorState state,
                                                  const ccl_private ShaderData *sd,
+                                                 const ccl_private ShaderVolumePhases *phases,
                                                  const ccl_private ShaderVolumeClosure *svc,
                                                  const float2 rand_phase,
                                                  ccl_private BsdfEval *phase_eval,
@@ -288,21 +327,21 @@ ccl_device int volume_shader_phase_guided_sample(KernelGlobals kg,
 
   /* Initialize to zero. */
   int label = LABEL_NONE;
-  Spectrum eval = zero_spectrum();
 
   *unguided_phase_pdf = 0.0f;
   float guide_pdf = 0.0f;
-  *sampled_roughness = 1.0f - fabsf(volume_phase_get_g(svc));
 
   bsdf_eval_init(phase_eval, zero_spectrum());
 
   if (sample_guiding) {
     /* Sample guiding distribution. */
+    *sampled_roughness = 1.0f - fabsf(volume_phase_get_g(svc));
     guide_pdf = guiding_phase_sample(kg, rand_phase, wo);
     *phase_pdf = 0.0f;
 
     if (guide_pdf != 0.0f) {
-      *unguided_phase_pdf = volume_shader_phase_eval(sd, svc, *wo, phase_eval);
+      *unguided_phase_pdf = _volume_shader_phase_eval_mis(
+          kg, sd, phases, *wo, nullptr, phase_eval, 0.0f, 0.0f, zero_spectrum());
       *phase_pdf = (guiding_sampling_prob * guide_pdf) +
                    ((1.0f - guiding_sampling_prob) * (*unguided_phase_pdf));
       label = LABEL_VOLUME_SCATTER;
@@ -311,11 +350,10 @@ ccl_device int volume_shader_phase_guided_sample(KernelGlobals kg,
   else {
     /* Sample phase. */
     *phase_pdf = 0.0f;
-    label = volume_phase_sample(sd, svc, rand_phase, &eval, wo, unguided_phase_pdf);
+    label = volume_shader_phase_sample(
+        kg, sd, phases, svc, rand_phase, phase_eval, wo, unguided_phase_pdf, sampled_roughness);
 
     if (*unguided_phase_pdf != 0.0f) {
-      bsdf_eval_init(phase_eval, eval);
-
       *phase_pdf = *unguided_phase_pdf;
       if (use_volume_guiding) {
         guide_pdf = guiding_phase_pdf(kg, *wo);
@@ -335,27 +373,6 @@ ccl_device int volume_shader_phase_guided_sample(KernelGlobals kg,
   return label;
 }
 #  endif
-
-ccl_device int volume_shader_phase_sample(const ccl_private ShaderData *sd,
-                                          const ccl_private ShaderVolumeClosure *svc,
-                                          const float2 rand_phase,
-                                          ccl_private BsdfEval *phase_eval,
-                                          ccl_private float3 *wo,
-                                          ccl_private float *pdf,
-                                          ccl_private float *sampled_roughness)
-{
-  *sampled_roughness = 1.0f - fabsf(volume_phase_get_g(svc));
-  Spectrum eval = zero_spectrum();
-
-  *pdf = 0.0f;
-  const int label = volume_phase_sample(sd, svc, rand_phase, &eval, wo, pdf);
-
-  if (*pdf != 0.0f) {
-    bsdf_eval_init(phase_eval, eval);
-  }
-
-  return label;
-}
 
 /* Motion Blur */
 

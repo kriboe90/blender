@@ -14,6 +14,7 @@
 #include "scene/image_sky.h"
 #include "scene/integrator.h"
 #include "scene/light.h"
+#include "scene/medium_table.h"
 #include "scene/mesh.h"
 #include "scene/osl.h"
 #include "scene/scene.h"
@@ -27,6 +28,7 @@
 #include "util/log.h"
 #include "util/math_base.h"
 #include "util/math_float3.h"
+#include "util/path.h"
 #include "util/string.h"
 #include "util/transform.h"
 
@@ -3622,6 +3624,95 @@ void PrincipledVolumeNode::compile(OSLCompiler &compiler)
   }
 
   compiler.add(this, "node_principled_volume");
+}
+
+/* Tabulated Volume Closure */
+
+NODE_DEFINE(TabulatedVolumeNode)
+{
+  NodeType *type = NodeType::add("tabulated_volume", create, NodeType::SHADER);
+
+  SOCKET_STRING(table, "Table", ustring());
+  SOCKET_STRING(filepath, "Filepath", ustring());
+
+  SOCKET_IN_FLOAT(density, "Density", 1.0f);
+  SOCKET_IN_FLOAT(volume_mix_weight, "VolumeMixWeight", 0.0f, SocketType::SVM_INTERNAL);
+
+  SOCKET_OUT_CLOSURE(volume, "Volume");
+
+  return type;
+}
+
+TabulatedVolumeNode::TabulatedVolumeNode() : VolumeNode(get_node_type())
+{
+  closure = CLOSURE_VOLUME_TABULATED_ID;
+}
+
+bool TabulatedVolumeNode::build_table(MediumTable &medium) const
+{
+  string text = table.string();
+  string source = "table text";
+
+  if (text.empty() && !filepath.empty()) {
+    if (!path_read_text(filepath.string(), text)) {
+      LOG_ERROR << "Tabulated Volume: failed to read medium table " << filepath;
+      return false;
+    }
+    source = filepath.string();
+  }
+
+  if (text.empty()) {
+    LOG_WARNING << "Tabulated Volume: no medium table assigned";
+    return false;
+  }
+
+  string error;
+  if (!medium_table_build(text, medium, error)) {
+    LOG_ERROR << "Tabulated Volume: invalid medium table (" << source << "): " << error;
+    return false;
+  }
+
+  return true;
+}
+
+void TabulatedVolumeNode::compile(SVMCompiler &compiler)
+{
+  MediumTable medium;
+  if (!build_table(medium)) {
+    return;
+  }
+
+  compiler.add_node(this,
+                    NODE_TABULATED_VOLUME,
+                    SVMNodeTabulatedVolume{
+                        .sigma_s = medium.sigma_s,
+                        .sigma_a = medium.sigma_a,
+                        .density = compiler.input_float("Density"),
+                        .table_size = uint(medium.data.size()),
+                        .num_angles = medium.num_angles,
+                        .g = medium.g,
+                        .mix_weight_offset = compiler.closure_mix_weight_offset(),
+                    });
+
+  /* The phase function table follows the node. */
+  for (const float value : medium.data) {
+    compiler.add_node_data_float(value);
+  }
+}
+
+void TabulatedVolumeNode::compile(OSLCompiler &compiler)
+{
+  /* OSL has no tabulated phase function closure. Approximate it with Henyey-Greenstein using the
+   * mean cosine of the table, so that the coefficients are still right. */
+  MediumTable medium;
+  if (!build_table(medium)) {
+    medium = MediumTable();
+  }
+
+  compiler.parameter_color("SigmaS", medium.sigma_s);
+  compiler.parameter_color("SigmaA", medium.sigma_a);
+  compiler.parameter("G", medium.g);
+  compiler.add(this, "node_tabulated_volume");
 }
 
 /* Principled Hair BSDF Closure */
